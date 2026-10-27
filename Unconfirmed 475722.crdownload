@@ -1,0 +1,20 @@
+"""
+index_data.py
+Hides real ticket volumes by converting them to an index (first month = 100).
+The shape of the series and every MAPE % stay exactly the same.
+
+Input : monthly_tickets.csv          (real counts - keep this file private)
+Output: monthly_tickets_indexed.csv  (safe to publish)
+
+Usage:
+    python index_data.py
+"""
+import pandas as pd
+
+df = pd.read_csv("monthly_tickets.csv")
+base = df["tickets"].iloc[0]                       # first month becomes 100
+df["tickets"] = (df["tickets"] / base * 100).round(2)
+df.to_csv("monthly_tickets_indexed.csv", index=False)
+
+print(df.to_string(index=False))
+print("\nSaved monthly_tickets_indexed.csv (first month = 100)")

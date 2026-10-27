@@ -1,0 +1,128 @@
+"""
+forecast.py
+Walk-forward test of 4 forecasting methods on monthly ticket volume,
+then a 3-month forecast with the most accurate one.
+
+Input : a CSV with columns month, tickets  (default: monthly_tickets_indexed.csv)
+Output: forecast_results.csv, ticket_forecast.png
+
+Usage:
+    pip install pandas numpy matplotlib statsmodels
+    python forecast.py                       # uses monthly_tickets_indexed.csv
+    python forecast.py my_monthly_data.csv   # or any other file
+"""
+import sys
+import warnings
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+warnings.filterwarnings("ignore")   # statsmodels prints convergence notes on short series
+
+TEST_MONTHS = 3       # walk-forward: test each of the last 3 months one at a time
+HORIZON = 3           # how many future months to forecast
+
+
+# ---------- load ----------
+def load_series(path: str = "monthly_tickets_indexed.csv") -> pd.Series:
+    df = pd.read_csv(path)
+    idx = pd.PeriodIndex(df["month"], freq="M").to_timestamp()
+    s = pd.Series(df["tickets"].astype(float).values, index=idx, name="tickets").asfreq("MS")
+    if s.isna().any():
+        raise ValueError(f"Missing months in data: {list(s[s.isna()].index.strftime('%Y-%m'))}")
+    return s
+
+
+# ---------- methods: each takes the history and returns the next `h` values ----------
+def naive(history: pd.Series, h: int) -> np.ndarray:
+    """Next month = last month."""
+    return np.repeat(history.iloc[-1], h)
+
+
+def moving_average(history: pd.Series, h: int, window: int = 3) -> np.ndarray:
+    """Next month = average of the last `window` months."""
+    return np.repeat(history.iloc[-window:].mean(), h)
+
+
+def simple_exp_smoothing(history: pd.Series, h: int) -> np.ndarray:
+    """Weighted average with more weight on recent months (follows the level)."""
+    return ExponentialSmoothing(history).fit().forecast(h).values
+
+
+def holt_trend(history: pd.Series, h: int) -> np.ndarray:
+    """Exponential smoothing with an additive trend (follows level + slope)."""
+    return ExponentialSmoothing(history, trend="add").fit().forecast(h).values
+
+
+METHODS = {
+    "Naive": naive,
+    "Moving avg (3m)": moving_average,
+    "Exp. smoothing": simple_exp_smoothing,
+    "Holt trend": holt_trend,
+}
+
+
+def mape(actual, predicted) -> float:
+    actual, predicted = np.asarray(actual), np.asarray(predicted)
+    return float(np.mean(np.abs((actual - predicted) / actual)) * 100)
+
+
+# ---------- walk-forward test ----------
+def walk_forward(s: pd.Series) -> pd.DataFrame:
+    rows = []
+    for i in range(TEST_MONTHS, 0, -1):
+        history, actual = s.iloc[:-i], s.iloc[-i]
+        row = {"month": s.index[-i].strftime("%b %Y"), "actual": round(float(actual), 2)}
+        for name, method in METHODS.items():
+            row[name] = round(float(method(history, 1)[0]), 2)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def main():
+    path = sys.argv[1] if len(sys.argv) > 1 else "monthly_tickets_indexed.csv"
+    s = load_series(path)
+    indexed = "indexed" in path
+    print(f"Loaded {len(s)} months: {s.index[0]:%b %Y} – {s.index[-1]:%b %Y}\n")
+
+    results = walk_forward(s)
+    print("Walk-forward test (each month forecast using only earlier data):")
+    print(results.to_string(index=False), "\n")
+
+    scores = {name: mape(results["actual"], results[name]) for name in METHODS}
+    print("MAPE (lower is better):")
+    for name, score in sorted(scores.items(), key=lambda kv: kv[1]):
+        print(f"  {name:<16} {score:5.1f}%")
+
+    best = min(scores, key=scores.get)
+    future_idx = pd.date_range(s.index[-1] + pd.offsets.MonthBegin(), periods=HORIZON, freq="MS")
+    future = pd.Series(METHODS[best](s, HORIZON), index=future_idx).round(1)
+
+    print(f"\nBest method: {best} ({scores[best]:.1f}% MAPE)")
+    print("Forecast:")
+    for d, v in future.items():
+        print(f"  {d:%b %Y}: {v:.1f}")
+
+    results.assign(best_method=best, best_mape=round(scores[best], 1)).to_csv("forecast_results.csv", index=False)
+
+    # ---------- chart ----------
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    ax.plot(s.index, s.values, marker="o", color="#1F3A5F", label="Actual")
+    ax.plot([s.index[-1], *future.index], [s.iloc[-1], *future.values],
+            marker="o", linestyle="--", color="#E8A33D", label=f"Forecast ({best})")
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.grid(axis="y", alpha=0.3)
+    ax.set_ylabel("Ticket volume index (first month = 100)" if indexed else "Tickets created")
+    ax.set_title(f"Monthly ticket volume and {HORIZON}-month forecast "
+                 f"(walk-forward MAPE {scores[best]:.1f}%)", loc="left")
+    ax.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig("ticket_forecast.png", dpi=150)
+    print("\nSaved forecast_results.csv and ticket_forecast.png")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,45 @@
+"""
+prepare_data.py
+Turns a Salesforce case export (.xlsx) into monthly counts -> monthly_tickets.csv
+
+Usage:
+    python prepare_data.py "Monthly_Cases_created.xlsx"
+
+Only the month and the count are saved. No names, case numbers or contacts
+leave this script, so monthly_tickets.csv is safe to share or push to GitHub.
+"""
+import sys
+import pandas as pd
+
+DATE_COLUMN = "Date/Time Opened"   # change if your export uses a different column
+START, END = "2024-12-01", "2026-10-01"   # END is exclusive (drops the partial month)
+
+
+def load_salesforce_export(path: str) -> pd.DataFrame:
+    # Salesforce "formatted" exports have title/filter rows above the real header.
+    raw = pd.read_excel(path, header=None)
+    header_row = raw.index[raw.apply(lambda r: DATE_COLUMN in r.values, axis=1)][0]
+    df = pd.read_excel(path, header=header_row)
+    df = df.dropna(subset=[DATE_COLUMN])
+    df[DATE_COLUMN] = pd.to_datetime(df[DATE_COLUMN], format="%m/%d/%Y %I:%M %p", errors="coerce")
+    return df.dropna(subset=[DATE_COLUMN])
+
+
+def to_monthly(df: pd.DataFrame) -> pd.DataFrame:
+    df = df[(df[DATE_COLUMN] >= START) & (df[DATE_COLUMN] < END)]
+    monthly = (df.groupby(df[DATE_COLUMN].dt.to_period("M"))
+                 .size()
+                 .rename("tickets")
+                 .reset_index()
+                 .rename(columns={DATE_COLUMN: "month"}))
+    monthly["month"] = monthly["month"].astype(str)
+    return monthly
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit('Usage: python prepare_data.py "<salesforce_export.xlsx>"')
+    monthly = to_monthly(load_salesforce_export(sys.argv[1]))
+    monthly.to_csv("monthly_tickets.csv", index=False)
+    print(monthly.to_string(index=False))
+    print(f"\nSaved monthly_tickets.csv ({len(monthly)} months, {monthly.tickets.sum():,} tickets)")
